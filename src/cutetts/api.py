@@ -40,6 +40,7 @@ from cutetts.inference.batch_generation import batched_ar_infer
 from cutetts.inference.generation import (
     NaiveInferConfig,
     _normalize_decoded_waveforms,
+    enable_locenc_cuda_graph,
     _offline_decode_generated_latents,
     _vae_decode_autocast,
     naive_ar_infer,
@@ -178,13 +179,17 @@ class CuteTTS:
         long-running use (servers, batch synthesis) rather than one-shot CLI
         calls. CUDA only.
 
-        cuda_graph_decode: on CUDA, replay the streaming VAE decoder as a CUDA
-        graph, captured once per batch size. It computes the same audio and
-        cuts per-chunk decoding from ~8 ms to ~2 ms on an RTX A5000; turn it
-        off to save the graphs' GPU memory."""
+        cuda_graph_decode: on CUDA, replay the streaming VAE decoder and the
+        per-patch locenc embedding as CUDA graphs, captured once per batch
+        size. They compute the same values and cut per-chunk VAE decoding from
+        ~8 ms to ~2 ms on an RTX A5000; turn it off to save the graphs' GPU
+        memory."""
         runtime = load_runtime(_resolve_model_dir(model_dir), device)
         runtime.processor.acoustic_vae.cuda_graphs = bool(cuda_graph_decode) and (
             runtime.processor.device.type == "cuda"
+        )
+        enable_locenc_cuda_graph(
+            runtime.model, bool(cuda_graph_decode) and runtime.model.device.type == "cuda"
         )
         set_sampler_compile_mode(
             "eager" if runtime.model.device.type == "mps" else "full-sampler"

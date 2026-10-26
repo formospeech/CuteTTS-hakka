@@ -421,6 +421,26 @@ def _latent_sequence_for_lm(pred_latent: torch.Tensor) -> torch.Tensor:
     raise ValueError(f"Unexpected predicted latent shape for LM input: {tuple(pred_latent.shape)}.")
 
 
+def _embed_decode_step(lm: CuteTTSModel, latent_sequence: torch.Tensor) -> torch.Tensor:
+    """embed_acoustic_latents for the patch a decode step just generated, replayed
+    as a CUDA graph when CuteTTS enabled it (see enable_locenc_cuda_graph)."""
+    graphed = getattr(lm, "_cutetts_graphed_locenc", None)
+    if graphed is not None:
+        return graphed(latent_sequence)
+    return lm.embed_acoustic_latents(latent_sequence)
+
+
+def enable_locenc_cuda_graph(lm: CuteTTSModel, enabled: bool = True) -> None:
+    """Replay the per-step locenc embedding (2 small transformer layers, launch-bound
+    at one patch) as a CUDA graph per batch shape. Same values as the eager call."""
+    from cutetts.inference.cuda_graphs import GraphedFunction
+
+    # Not an nn.Module child: keep it out of the state dict and .to() traversal.
+    object.__setattr__(
+        lm, "_cutetts_graphed_locenc", GraphedFunction(lm.embed_acoustic_latents) if enabled else None
+    )
+
+
 def _require_offline_decode_compatible(lm: CuteTTSModel) -> None:
     if getattr(lm.config, "include_semantic_latent", False):
         raise NotImplementedError(
@@ -1095,7 +1115,7 @@ def _naive_ar_infer_impl(
                 pred_latent,
             )
 
-        acoustic_embed = lm.embed_acoustic_latents(_latent_sequence_for_lm(pred_latent).to(dtype=acoustic_connector_dtype))
+        acoustic_embed = _embed_decode_step(lm, _latent_sequence_for_lm(pred_latent).to(dtype=acoustic_connector_dtype))
         input_embeds = acoustic_embed
 
         lm_decode_started = start_stage(stage_profiler)

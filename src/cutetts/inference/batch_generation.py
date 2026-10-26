@@ -49,6 +49,7 @@ from cutetts.inference.generation import (
     _add_speaker_embedding_input,
     _add_sway_sampling_input,
     _cfg_enabled,
+    _embed_decode_step,
     _head_condition_dtype,
     _latent_sequence_for_lm,
     _lm_cfg_enabled,
@@ -211,8 +212,9 @@ def batched_ar_infer(
         if bool((finished_at >= 0).all()):
             break
         previous = pred.to(dtype=head_dtype)
-        input_embeds = lm.embed_acoustic_latents(
-            _latent_sequence_for_lm(pred).to(dtype=connector_dtype)
+        input_embeds = _embed_decode_step(
+            lm,
+            _latent_sequence_for_lm(pred).to(dtype=connector_dtype),
         )
         cond.step(input_embeds)
         if uncond is not None:
