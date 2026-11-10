@@ -141,16 +141,22 @@ _STREAM_DONE = object()
 LM_CACHE_CAPACITY = 2048
 
 
-def _resolve_model_dir(model_dir: str | Path) -> Path:
+def _resolve_model_dir(model_dir: str | Path, subfolder: str | None = None) -> Path:
     """A local model directory as is; otherwise a Hugging Face repo id
     (e.g. "formospeech/cutetts-hakka-community-1"), downloaded once into the
-    Hub cache. Gated repos need a logged-in account with access."""
+    Hub cache. Gated repos need a logged-in account with access. With
+    `subfolder`, the model is that folder of the directory or repo (only it
+    is downloaded)."""
     path = Path(model_dir).expanduser()
     if path.exists() or str(model_dir).count("/") != 1:
-        return path
+        return path / subfolder if subfolder else path
     from huggingface_hub import snapshot_download
 
-    return Path(snapshot_download(str(model_dir)))
+    if not subfolder:
+        return Path(snapshot_download(str(model_dir)))
+    subfolder = subfolder.strip("/")
+    root = snapshot_download(str(model_dir), allow_patterns=[f"{subfolder}/*"])
+    return Path(root) / subfolder
 
 
 class CuteTTS:
@@ -172,6 +178,7 @@ class CuteTTS:
         device: str | torch.device = "auto",
         compile_lm: bool = False,
         cuda_graph_decode: bool = True,
+        subfolder: str | None = None,
     ) -> "CuteTTS":
         """compile_lm: CUDA-graph the language model's decode step (static KV
         cache + torch.compile). Several times faster per generated patch, but
@@ -183,8 +190,12 @@ class CuteTTS:
         per-patch locenc embedding as CUDA graphs, captured once per batch
         size. They compute the same values and cut per-chunk VAE decoding from
         ~8 ms to ~2 ms on an RTX A5000; turn it off to save the graphs' GPU
-        memory."""
-        runtime = load_runtime(_resolve_model_dir(model_dir), device)
+        memory.
+
+        subfolder: load the model stored in this folder of `model_dir` (a
+        local directory or a Hub repo id), e.g. the 2-step head kept under
+        "2step" in formospeech/cutetts-hakka-community-1-distill."""
+        runtime = load_runtime(_resolve_model_dir(model_dir, subfolder), device)
         runtime.processor.acoustic_vae.cuda_graphs = bool(cuda_graph_decode) and (
             runtime.processor.device.type == "cuda"
         )
@@ -239,11 +250,16 @@ class CuteTTS:
         seed: int = 42,
         show_progress: bool = True,
         pcm_chunk_callback: Callable[[torch.Tensor], None] | None = None,
+        noise_temperature: float | None = None,
     ) -> GenerationResult:
+        """noise_temperature: variance of the flow sampler's initial noise
+        (std = its square root). Lower values trade variety for cleaner
+        audio; None uses the model's default (config.json
+        generation_defaults, else 1.0)."""
         text = str(text).strip()
         if not text:
             raise ValueError("text must not be empty.")
-        steps, sway, cfg_mode, ordinary_cfg, distilled_cfg = self._settings(
+        steps, sway, cfg_mode, ordinary_cfg, distilled_cfg, temperature = self._settings(
             mode,
             reference_audio,
             dialect,
@@ -251,6 +267,7 @@ class CuteTTS:
             diffusion_steps,
             diffusion_sway_coefficient,
             max_decode_length,
+            noise_temperature,
         )
 
         self._seed(int(seed))
@@ -268,6 +285,7 @@ class CuteTTS:
             max_decode_length=int(max_decode_length),
             diffusion_sway_coefficient=sway,
             distilled_cfg_strength=distilled_cfg,
+            noise_temperature=temperature,
             static_lm_cache=self.compile_lm,
             compile_lm_decode=self.compile_lm,
             lm_cache_capacity=LM_CACHE_CAPACITY if self.compile_lm else None,
@@ -311,6 +329,7 @@ class CuteTTS:
         seed: int = 42,
         batch_size: int | None = None,
         pcm_chunk_callback: Callable[[int, torch.Tensor], None] | None = None,
+        noise_temperature: float | None = None,
     ) -> list[GenerationResult]:
         """Synthesize several utterances, `batch_size` (default: all) at a time.
 
@@ -338,11 +357,11 @@ class CuteTTS:
         settings = [
             self._settings(
                 mode, ref, dia, cfg_strength, diffusion_steps,
-                diffusion_sway_coefficient, max_decode_length,
+                diffusion_sway_coefficient, max_decode_length, noise_temperature,
             )
             for ref, dia in zip(references, dialects)
         ]
-        steps, sway, cfg_mode, ordinary_cfg, distilled_cfg = settings[0]
+        steps, sway, cfg_mode, ordinary_cfg, distilled_cfg, temperature = settings[0]
         plan = build_guidance_plan(mode, cfg_mode, ordinary_cfg)
         infer_config = NaiveInferConfig(
             diffusion_steps=steps,
@@ -351,6 +370,7 @@ class CuteTTS:
             max_decode_length=int(max_decode_length),
             diffusion_sway_coefficient=sway,
             distilled_cfg_strength=distilled_cfg,
+            noise_temperature=temperature,
         )
         processor = self.runtime.processor
         model = self.runtime.model
@@ -552,8 +572,10 @@ class CuteTTS:
         diffusion_steps: int | None,
         diffusion_sway_coefficient: float | None,
         max_decode_length: int,
-    ) -> tuple[int, float, str, float, float | None]:
-        """Validate the request; (steps, sway, cfg_mode, ordinary_cfg, distilled_cfg)."""
+        noise_temperature: float | None = None,
+    ) -> tuple[int, float, str, float, float | None, float]:
+        """Validate the request; (steps, sway, cfg_mode, ordinary_cfg, distilled_cfg,
+        noise_temperature)."""
         if mode not in {"tts", "voice_clone"}:
             raise ValueError("mode must be 'tts' or 'voice_clone'.")
         if mode == "voice_clone" and reference_audio is None:
@@ -565,9 +587,14 @@ class CuteTTS:
             raise ValueError("cfg_strength must be a finite non-negative number.")
         if max_decode_length <= 0:
             raise ValueError("max_decode_length must be positive.")
+        defaults = self.runtime.generation_defaults
+        temperature = float(
+            defaults.get("noise_temperature", 1.0) if noise_temperature is None else noise_temperature
+        )
+        if not math.isfinite(temperature) or temperature <= 0.0:
+            raise ValueError("noise_temperature must be a finite positive number.")
 
         if self.variant == "base":
-            defaults = self.runtime.generation_defaults
             steps = int(defaults.get("diffusion_steps", 10)) if diffusion_steps is None else int(diffusion_steps)
             sway = float(defaults.get("diffusion_sway_coefficient", -0.8)) if (
                 diffusion_sway_coefficient is None
@@ -580,9 +607,14 @@ class CuteTTS:
             ordinary_cfg = cfg_strength
             distilled_cfg = None
         else:
-            steps = 4 if diffusion_steps is None else int(diffusion_steps)
-            if steps not in {1, 2, 4}:
-                raise ValueError("CuteTTS-distill supports diffusion_steps 1, 2, or 4.")
+            # A head trained for one step count (e.g. the 2-step drifting head)
+            # lists it in generation_defaults.supported_diffusion_steps.
+            supported = [int(n) for n in defaults.get("supported_diffusion_steps", [1, 2, 4])]
+            steps = int(defaults.get("diffusion_steps", 4)) if diffusion_steps is None else int(diffusion_steps)
+            if steps not in supported:
+                raise ValueError(
+                    f"This CuteTTS-distill model supports diffusion_steps {supported}."
+                )
             if diffusion_sway_coefficient not in {None, 0, 0.0}:
                 raise ValueError("CuteTTS-distill does not expose sway sampling.")
             if cfg_strength > 5.0:
@@ -592,7 +624,7 @@ class CuteTTS:
             ordinary_cfg = 0.0
             distilled_cfg = cfg_strength
 
-        return steps, sway, cfg_mode, ordinary_cfg, distilled_cfg
+        return steps, sway, cfg_mode, ordinary_cfg, distilled_cfg, temperature
 
     def _branches(
         self,
@@ -660,6 +692,7 @@ class CuteTTS:
         max_decode_length: int = 750,
         seed: int = 42,
         show_progress: bool = False,
+        noise_temperature: float | None = None,
     ) -> Iterator[AudioChunk]:
         """Yield decoded PCM chunks as autoregressive generation progresses.
 
@@ -709,6 +742,7 @@ class CuteTTS:
                     seed=seed,
                     show_progress=show_progress,
                     pcm_chunk_callback=emit,
+                    noise_temperature=noise_temperature,
                 )
             except _StreamCancelled:
                 pass

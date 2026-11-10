@@ -58,6 +58,8 @@ class NaiveInferConfig:
         cfg_strength: Extra classifier-free guidance strength; 0.0 is ordinary conditional generation.
         cfg_mode: `lm` for the base model or `nocfg` for the distilled model.
         max_decode_length: Maximum number of autoregressive steps.
+        noise_temperature: Variance of the flow sampler's initial Gaussian
+            noise (its std is the square root); 1.0 is the standard normal.
     """
     diffusion_steps: int = 20
     cfg_strength: float = 0.5
@@ -65,6 +67,7 @@ class NaiveInferConfig:
     max_decode_length: int = 750
     diffusion_sway_coefficient: float = 0.0
     distilled_cfg_strength: "float|None" = None
+    noise_temperature: float = 1.0
     batch_lm_cfg_decode: bool = False
     static_lm_cache: bool = False
     compile_lm_decode: bool = False
@@ -78,6 +81,7 @@ class NaiveInferConfig:
         assert self.cfg_strength >= 0.0
         assert self.distilled_cfg_strength is None or self.distilled_cfg_strength >= 0.0
         assert -1.0 <= self.diffusion_sway_coefficient <= 2.0 / (math.pi - 2.0)
+        assert math.isfinite(self.noise_temperature) and self.noise_temperature > 0.0
         if self.distilled_cfg_strength is not None:
             assert self.cfg_mode == "nocfg"
             assert self.cfg_strength == 0.0
@@ -236,6 +240,14 @@ def _add_distilled_cfg_strength_input(
 ) -> None:
     if config.distilled_cfg_strength is not None:
         head_input["distilled_cfg_strength"] = config.distilled_cfg_strength
+
+
+def _add_noise_scale_input(
+    head_input: dict,
+    config: NaiveInferConfig,
+) -> None:
+    if config.noise_temperature != 1.0:
+        head_input["noise_scale"] = math.sqrt(config.noise_temperature)
 
 
 def _new_sampling_condition_cache(
@@ -1037,6 +1049,7 @@ def _naive_ar_infer_impl(
         )
         _add_sway_sampling_input(head_additional_input, config)
         _add_distilled_cfg_strength_input(head_additional_input, config)
+        _add_noise_scale_input(head_additional_input, config)
         _add_sampling_condition_cache_input(
             head_additional_input,
             sampling_condition_cache,

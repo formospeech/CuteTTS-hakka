@@ -7,9 +7,9 @@ This is the [FormoSpeech](https://huggingface.co/formospeech) fork of CuteTTS wi
 | Model | Description |
 | --- | --- |
 | [formospeech/cutetts-hakka-community-1](https://huggingface.co/formospeech/cutetts-hakka-community-1) | Hakka finetune of CuteTTS. 10 flow-matching steps with classifier-free guidance. |
-| [formospeech/cutetts-hakka-community-1-distill](https://huggingface.co/formospeech/cutetts-hakka-community-1-distill) | Guidance-step distilled version. 4 single-branch steps, about 3.6x faster. |
+| [formospeech/cutetts-hakka-community-1-distill](https://huggingface.co/formospeech/cutetts-hakka-community-1-distill) | Guidance-step distilled version. 4 single-branch steps, about 1.8–2.4x faster. Its `2step` folder (`subfolder="2step"`) holds a head trained for 2 steps, about 2.2–2.9x faster. |
 
-The fork adds a `dialect` argument to `CuteTTS.generate`, `CuteTTS.generate_stream` and the CLI (`--dialect`). It takes the same labels as [FormoSpeech/OmniVoice-hakka](https://github.com/FormoSpeech/OmniVoice-hakka): `客語四縣腔`, `客語海陸腔`, `客語大埔腔`, `客語饒平腔`, `客語詔安腔`, `客語南四縣腔`. `dialect` requires `mode="voice_clone"`. `from_pretrained` / `--model-dir` also accept a Hugging Face repo id.
+The fork adds a `dialect` argument to `CuteTTS.generate`, `CuteTTS.generate_stream` and the CLI (`--dialect`). It takes the same labels as [FormoSpeech/OmniVoice-hakka](https://github.com/FormoSpeech/OmniVoice-hakka): `客語四縣腔`, `客語海陸腔`, `客語大埔腔`, `客語饒平腔`, `客語詔安腔`, `客語南四縣腔`. `dialect` requires `mode="voice_clone"`. `from_pretrained` / `--model-dir` also accept a Hugging Face repo id, and `subfolder` / `--subfolder` load a model kept in a folder of the directory or repo (only that folder is downloaded).
 
 ```bash
 pip install git+https://github.com/FormoSpeech/CuteTTS-hakka.git
@@ -37,7 +37,7 @@ python infer.py --model-dir formospeech/cutetts-hakka-community-1 --mode voice_c
     --reference-audio ref.wav --dialect 客語四縣腔 --text "客語語音合成測試。" --output out.wav
 ```
 
-For many utterances, `generate_batch` decodes them together. Batching keeps the GPU busy, and on one RTX A5000 the distilled model goes from 4.8x real time at batch 1 to 38x at batch 32 (50x with precomputed voices, below).
+For many utterances, `generate_batch` decodes them together. Batching keeps the GPU busy, and on one RTX A5000 the 4-step distilled model goes from 6.7x real time at batch 1 to 43x at batch 32 (58x with precomputed voices, below; the 2-step model reaches 69x).
 
 ```python
 results = model.generate_batch(
@@ -66,7 +66,9 @@ result = model.generate("客語語音合成測試。", mode="voice_clone", refer
 
 On CUDA, the streaming VAE decoder that turns each patch into audio, and the local encoder that embeds each generated patch for the language model, are replayed as CUDA graphs by default (`cuda_graph_decode=True`). They produce the same audio; the decoder goes from about 8 ms to 2 ms per chunk, which shortens time to first audio. Each batch size captures its own graphs the first time it is used.
 
-A model's `config.json` can set `generation_defaults` (e.g. `{"diffusion_sway_coefficient": 0.0}`). The Hakka base checkpoint uses it to default to uniform steps: on the Hakka eval they match sway sampling in quality, and the compiled sampler makes them about 2x faster.
+`noise_temperature` (all generate methods, `--noise-temperature` on the command line) sets the variance of the flow sampler's initial Gaussian noise; its standard deviation is the square root. 1.0 is the standard normal; lower values trade variety for cleaner audio.
+
+A model's `config.json` can set `generation_defaults`, used when the matching argument is not given: `diffusion_steps`, `diffusion_sway_coefficient` (base models), `noise_temperature`, and, for distilled models, `supported_diffusion_steps` (default `[1, 2, 4]`). The Hakka base checkpoint uses it to default to uniform steps: on the Hakka eval they match sway sampling in quality, and the compiled sampler makes them about 2x faster. Both Hakka distilled models default to `noise_temperature` 0.5, and the 2-step one to `diffusion_steps` 2 with `supported_diffusion_steps` `[2]`.
 
 Everything below is the upstream CuteTTS README.
 

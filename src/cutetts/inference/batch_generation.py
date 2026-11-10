@@ -45,6 +45,7 @@ from cutetts.inference.generation import (
     _acoustic_connector_dtype,
     _add_audio_dit_cond_input,
     _add_distilled_cfg_strength_input,
+    _add_noise_scale_input,
     _add_sampling_condition_cache_input,
     _add_speaker_embedding_input,
     _add_sway_sampling_input,
@@ -196,6 +197,7 @@ def batched_ar_infer(
         )
         _add_sway_sampling_input(head_input, config)
         _add_distilled_cfg_strength_input(head_input, config)
+        _add_noise_scale_input(head_input, config)
         _add_sampling_condition_cache_input(head_input, sampling_condition_cache)
         _add_audio_dit_cond_input(
             head_input, previous, use_cfg, previous if use_lm_cfg else None

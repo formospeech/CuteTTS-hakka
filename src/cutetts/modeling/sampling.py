@@ -79,6 +79,7 @@ def euler(
     c,
     cfg: float = 0.0,
     num_sampling_steps: int = 50,
+    noise_scale: float = 1.0,
 ):
     cfg_mult = 1
     if cfg > 0.0:
@@ -88,6 +89,8 @@ def euler(
     x_shape[0] = x_shape[0] // cfg_mult
     x_shape[-1] = input_dim
     x = torch.randn(x_shape, device=c.device)
+    if noise_scale != 1.0:
+        x = x * noise_scale
     dt = 1.0 / num_sampling_steps
     t = 0
     t_batch = torch.zeros(c.shape[0], device=c.device)

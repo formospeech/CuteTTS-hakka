@@ -63,6 +63,7 @@ def _euler_sway(
     *,
     num_sampling_steps: int,
     coefficient: float,
+    noise_scale: float = 1.0,
 ) -> Tensor:
     """Euler flow sampler over the non-uniform F5-TTS Sway time grid."""
     cfg_mult = 2 if cfg > 0.0 else 1
@@ -79,6 +80,8 @@ def _euler_sway(
         device=condition.device,
         dtype=torch.float32,
     )
+    if noise_scale != 1.0:
+        x = x * noise_scale
     times = sway_timesteps(
         num_sampling_steps,
         coefficient,
@@ -780,7 +783,14 @@ class AudioDiTHead(nn.Module):
         sway_sampling_coefficient: float = 0.0,
         distilled_cfg_strength: Tensor | float | None = None,
         sampling_condition_cache: list[tuple[Tensor, Tensor, Tensor | None, Tensor | None]] | None = None,
+        noise_scale: float = 1.0,
     ) -> Tensor:
+        """noise_scale multiplies the initial Gaussian noise: sqrt of the
+        sampling temperature (pocket-tts's "Gaussian temperature"); 1.0 keeps
+        the standard normal."""
+        noise_scale = float(noise_scale)
+        if not math.isfinite(noise_scale) or noise_scale <= 0.0:
+            raise ValueError("noise_scale must be a finite positive number.")
         if self.step_size_embedding_enabled:
             if int(num_sampling_steps) <= 0:
                 raise ValueError("num_sampling_steps must be positive.")
@@ -848,6 +858,8 @@ class AudioDiTHead(nn.Module):
             x_shape[0] = z.size(0) // cfg_mult
             x_shape[-1] = sample_dim
             initial_x = torch.randn(x_shape, device=z.device)
+            if noise_scale != 1.0:
+                initial_x = initial_x * noise_scale
             output = self._run_compiled_euler_sample(
                 initial_x,
                 z,
@@ -910,6 +922,7 @@ class AudioDiTHead(nn.Module):
                 cfg,
                 num_sampling_steps=num_sampling_steps,
                 coefficient=sway_sampling_coefficient,
+                noise_scale=noise_scale,
             )
             if self.patch_size != 1:
                 output = output.reshape(output.size(0), self.patch_size, self.ch_target)
@@ -920,6 +933,7 @@ class AudioDiTHead(nn.Module):
             z,
             cfg,
             num_sampling_steps=num_sampling_steps,
+            noise_scale=noise_scale,
         )
         if self.patch_size != 1:
             output = output.reshape(output.size(0), self.patch_size, self.ch_target)

@@ -30,6 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-dir", required=True, help="Model directory or Hugging Face repo id."
     )
+    parser.add_argument(
+        "--subfolder", help="Load the model stored in this folder of --model-dir (e.g. 2step)."
+    )
     parser.add_argument("--text", required=True)
     parser.add_argument("--mode", choices=("tts", "voice_clone"), default="tts")
     parser.add_argument("--reference-audio")
@@ -47,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cfg-strength", type=float, default=2.0)
     parser.add_argument("--diffusion-steps", type=int)
     parser.add_argument("--diffusion-sway-coefficient", type=float)
+    parser.add_argument(
+        "--noise-temperature",
+        type=float,
+        help="Variance of the sampler's initial noise (default: the model's own, else 1.0).",
+    )
     parser.add_argument("--max-decode-length", type=int, default=750)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-progress", action="store_true")
@@ -55,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    model = CuteTTS.from_pretrained(args.model_dir, device=args.device)
+    model = CuteTTS.from_pretrained(args.model_dir, device=args.device, subfolder=args.subfolder)
     result = model.generate(
         args.text,
         mode=args.mode,
@@ -67,6 +75,7 @@ def main() -> None:
         max_decode_length=args.max_decode_length,
         seed=args.seed,
         show_progress=not args.no_progress,
+        noise_temperature=args.noise_temperature,
     )
     output = Path(args.output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
